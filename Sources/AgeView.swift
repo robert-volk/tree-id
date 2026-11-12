@@ -65,6 +65,15 @@ struct AgeView: View {
                 if let c = center, let e = edge {
                     let cv = toView(c, rect: rect, imageSize: image.size)
                     let ev = toView(e, rect: rect, imageSize: image.size)
+                    if let r = result {
+                        ForEach(Array(r.rays.dropFirst().enumerated()), id: \.offset) { _, ray in
+                            Path { p in
+                                p.move(to: toView(ray.start, rect: rect, imageSize: image.size))
+                                p.addLine(to: toView(ray.end, rect: rect, imageSize: image.size))
+                            }
+                            .stroke(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                        }
+                    }
                     Path { p in p.move(to: cv); p.addLine(to: ev) }
                         .stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     Path { p in p.move(to: cv); p.addLine(to: ev) }
@@ -136,7 +145,14 @@ struct AgeView: View {
             VStack(spacing: 2) {
                 Text("About").font(.serif(14, italic: true)).opacity(0.7)
                 Text("\(years) years").font(.serif(40))
-                Text("\(result?.count ?? 0) rings detected").font(.serif(13)).opacity(0.6)
+                Text("\(result?.count ?? 0) rings, median of \(result?.total ?? 0) lines").font(.serif(13)).opacity(0.6)
+                if let r = result {
+                    Text(r.isConsistent
+                         ? "\(r.agreeing) of \(r.total) lines agree"
+                         : "Only \(r.agreeing) of \(r.total) lines agree. Treat this as a rough guess.")
+                        .font(.serif(13, italic: true))
+                        .foregroundStyle(r.isConsistent ? Theme.green : Color(red: 0.6, green: 0.3, blue: 0.1))
+                }
             }
 
             HStack(spacing: 18) {
@@ -150,7 +166,7 @@ struct AgeView: View {
             if let r = result, r.profile.count > 2 { profileChart(r.profile) }
 
             FieldCard {
-                Text("Yellow dots mark the rings the app found. Tap-drag again to re-measure, and use the plus and minus buttons if it missed or double-counted. This is an estimate: a stump cut above the ground is younger than the tree's full age, and wood grain, cracks, or a rough cut can fool the count.")
+                Text("The app measured along 16 lines around the stump and used the middle count. Yellow dots mark the rings it found on your own line. Drag again to re-measure, and use the plus and minus buttons if it missed or double-counted. This is an estimate: a stump cut above the ground is younger than the tree's full age, and wood grain, cracks, or a rough cut can fool the count.")
                     .font(.serif(13))
             }
 
@@ -182,7 +198,7 @@ struct AgeView: View {
         guard !saved else { return }
         let thumb: Data? = image?.jpeg(maxSide: 600, quality: 0.7)
         context.insert(Entry(kind: "age", title: "About \(years) years",
-                             subtitle: "Stump age", detail: "\(result?.count ?? 0) rings detected, adjusted by \(adjust)",
+                             subtitle: "Stump age", detail: "\(result?.count ?? 0) rings (\(result?.agreeing ?? 0) of \(result?.total ?? 0) lines agree), adjusted by \(adjust)",
                              photo: thumb))
         saved = true
     }

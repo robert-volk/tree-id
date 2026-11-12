@@ -1,19 +1,37 @@
 import UIKit
 import CoreGraphics
 
-struct RingResult {
+struct RingRay {
+    var start: CGPoint          // image pixel coordinates
+    var end: CGPoint
     var count: Int
-    /// Ring positions along the line, 0 (center) to 1 (bark).
+}
+
+struct RingResult {
+    /// Median ring count across all lines.
+    var count: Int
+    /// Ring positions along the user's own line, 0 (center) to 1 (bark).
     var positions: [Double]
-    /// Detrended brightness profile along the line, for the little chart.
+    /// Detrended brightness profile along the user's own line, for the little chart.
     var profile: [Float]
+    /// Every line that was measured; the first is the user's.
+    var rays: [RingRay]
+    /// How many lines landed within tolerance of the median.
+    var agreeing: Int
+
+    var total: Int { rays.count }
+    var isConsistent: Bool { total > 0 && agreeing * 2 >= total }
 }
 
 enum RingAnalyzer {
-    /// Samples brightness along the line from `center` to `edge` (image pixel coordinates),
-    /// then counts dark bands. Each dark band of late wood is one year of growth.
+    private static let rayCount = 16
+
+    /// Measures rings along `rayCount` lines fanned around `center`, each as long as the
+    /// center-to-edge line the user dragged, and takes the median. Each dark band of
+    /// late wood is one year of growth.
     static func analyze(image: UIImage, center: CGPoint, edge: CGPoint) -> RingResult {
-        guard let cg = image.cgImage else { return RingResult(count: 0, positions: [], profile: []) }
+        let empty = RingResult(count: 0, positions: [], profile: [], rays: [], agreeing: 0)
+        guard let cg = image.cgImage else { return empty }
         let w = cg.width, h = cg.height
         var pixels = [UInt8](repeating: 0, count: w * h)
         let space = CGColorSpaceCreateDeviceGray()
@@ -24,11 +42,49 @@ enum RingAnalyzer {
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
             return true
         }
-        guard drew else { return RingResult(count: 0, positions: [], profile: []) }
+        guard drew else { return empty }
 
         let dx = edge.x - center.x, dy = edge.y - center.y
+        let radius = hypot(dx, dy)
+        guard radius > 30 else { return empty }
+        let baseAngle = atan2(dy, dx)
+
+        var rays: [RingRay] = []
+        var primary: (positions: [Double], profile: [Float])?
+
+        for k in 0..<rayCount {
+            let angle = baseAngle + CGFloat(k) * 2 * .pi / CGFloat(rayCount)
+            let ux = cos(angle), uy = sin(angle)
+            // Stop at the image border so a stump near the edge doesn't read blank pixels.
+            var length = radius
+            if ux > 0 { length = min(length, (CGFloat(w - 1) - center.x) / ux) }
+            if ux < 0 { length = min(length, (0 - center.x) / ux) }
+            if uy > 0 { length = min(length, (CGFloat(h - 1) - center.y) / uy) }
+            if uy < 0 { length = min(length, (0 - center.y) / uy) }
+            // The user's own line is always kept; others must cover most of the radius.
+            if k > 0 && length < radius * 0.6 { continue }
+            guard length > 30 else { continue }
+
+            let end = CGPoint(x: center.x + ux * length, y: center.y + uy * length)
+            let r = measure(pixels: pixels, w: w, h: h, from: center, to: end)
+            rays.append(RingRay(start: center, end: end, count: r.positions.count))
+            if k == 0 { primary = (r.positions, r.profile) }
+        }
+
+        guard let primary, !rays.isEmpty else { return empty }
+        let counts = rays.map { $0.count }.sorted()
+        let median = counts[counts.count / 2]
+        let tolerance = max(1, Int((Double(median) * 0.1).rounded()))
+        let agreeing = counts.filter { abs($0 - median) <= tolerance }.count
+        return RingResult(count: median, positions: primary.positions, profile: primary.profile,
+                          rays: rays, agreeing: agreeing)
+    }
+
+    /// Dark-band positions and the detrended brightness profile along one line.
+    private static func measure(pixels: [UInt8], w: Int, h: Int,
+                                from a: CGPoint, to b: CGPoint) -> (positions: [Double], profile: [Float]) {
+        let dx = b.x - a.x, dy = b.y - a.y
         let length = hypot(dx, dy)
-        guard length > 30 else { return RingResult(count: 0, positions: [], profile: []) }
         let n = min(3000, max(60, Int(length)))
         let ux = dx / length, uy = dy / length
         let px = -uy, py = ux                       // perpendicular
@@ -43,7 +99,7 @@ enum RingAnalyzer {
         var raw = [Float](repeating: 0, count: n)
         for i in 0..<n {
             let t = CGFloat(i) / CGFloat(n - 1) * length
-            let cx = center.x + ux * t, cy = center.y + uy * t
+            let cx = a.x + ux * t, cy = a.y + uy * t
             var sum: Float = 0
             for o in -4...4 { sum += sample(cx + px * CGFloat(o), cy + py * CGFloat(o)) }
             raw[i] = sum / 9
@@ -69,9 +125,7 @@ enum RingAnalyzer {
                 }
             }
         }
-        return RingResult(count: minima.count,
-                          positions: minima.map { Double($0) / Double(n - 1) },
-                          profile: d)
+        return (minima.map { Double($0) / Double(n - 1) }, d)
     }
 
     private static func boxBlur(_ a: [Float], radius: Int) -> [Float] {
