@@ -11,6 +11,7 @@ struct AgeView: View {
     @State private var adjust = 0
     @State private var saved = false
     @State private var working = false
+    @State private var autoNote: String?
 
     private var years: Int { max(0, (result?.count ?? 0) + adjust) }
 
@@ -20,7 +21,7 @@ struct AgeView: View {
                 if let image {
                     VStack(spacing: 8) {
                         marker(image)
-                        Text("Drag from the center of the stump out to the bark.")
+                        Text(autoNote ?? "Drag from the center of the stump out to the bark.")
                             .font(.serif(14, italic: true)).opacity(0.7)
                     }
                     if working {
@@ -41,6 +42,8 @@ struct AgeView: View {
                 PhotoSourceBar { picked in
                     image = picked
                     center = nil; edge = nil; result = nil; adjust = 0; saved = false
+                    autoNote = nil
+                    autoDetect(picked)
                 }
             }
             .padding(16)
@@ -97,6 +100,7 @@ struct AgeView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { v in
+                        autoNote = nil
                         center = toImage(v.startLocation, rect: rect, imageSize: image.size)
                         edge = toImage(v.location, rect: rect, imageSize: image.size)
                         result = nil
@@ -124,6 +128,22 @@ struct AgeView: View {
     private func toView(_ p: CGPoint, rect: CGRect, imageSize: CGSize) -> CGPoint {
         CGPoint(x: rect.minX + p.x / imageSize.width * rect.width,
                 y: rect.minY + p.y / imageSize.height * rect.height)
+    }
+
+    private func autoDetect(_ image: UIImage) {
+        working = true
+        Task {
+            let found = await Task.detached { StumpDetector.detect(image: image) }.value
+            guard let found else {
+                working = false
+                autoNote = "Couldn't find the rings automatically. Drag from the center to the bark."
+                return
+            }
+            center = found.center
+            edge = CGPoint(x: min(found.center.x + found.radius, image.size.width - 1), y: found.center.y)
+            autoNote = "Measured automatically. Not right? Drag from the center to the bark."
+            analyze(image)
+        }
     }
 
     private func analyze(_ image: UIImage) {
